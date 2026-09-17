@@ -2305,7 +2305,7 @@ function Ui(){
           setMiniPoints(curPt ?? 0);
           setMiniHoleIdx(hIdx);
         },
-        style: { borderRight: "1px solid #000", boxSizing: "border-box" },
+        style: { borderRight: (hIdx === 8 || hIdx === 17) ? "0" : "1px solid #000", boxSizing: "border-box" },
         className: "w-full min-w-0 flex flex-col text-left bg-white active:bg-[#f5f4ef] hover:bg-[#faf9f5] transition-colors outline-none cursor-pointer overflow-hidden",
         children: [
           y("div", {
@@ -2341,35 +2341,6 @@ function Ui(){
                 ]
               })
             ]
-          })
-        ]
-      });
-    };
-
-    let renderOutInCell = (summary, lbl) => {
-      return y("div", {
-        key: "col-" + lbl,
-        style: { backgroundColor: "#fbfaf6" },
-        className: "w-full min-w-0 flex flex-col bg-[#fbfaf6] border-r-0 overflow-hidden",
-        children: [
-          y("div", {
-            style: { backgroundColor: "#111", color: "#fff" },
-            className: "h-[22px] flex items-center justify-center bg-[#111] text-white text-[9px] font-black tracking-wider uppercase",
-            children: lbl
-          }),
-          y("div", {
-            style: { borderTop: "1px solid #000", minHeight: "61px", boxSizing: "border-box" },
-            className: "w-full flex flex-col items-center justify-center py-[6px]",
-            children: summary.hasAny ? (p
-              ? y("span", { className: "text-[#111] font-black tracking-tight", style: { color: "#111", fontSize: "22px", lineHeight: "22px" }, children: summary.strokes })
-              : z("div", {
-                  className: "flex items-baseline justify-center leading-none",
-                  children: [
-                    y("span", { className: "text-[#111] font-black tracking-tight", style: { color: "#111", fontSize: "22px", lineHeight: "22px" }, children: summary.strokes }),
-                    y("span", { className: "text-[#9CA3AF] font-medium mx-[0.5px]", style: { fontSize: "11px" }, children: "/" }),
-                    y("span", { className: "font-black tracking-tight", style: { color: summary.points > 0 ? "#16a34a" : "#111", fontSize: "13px", lineHeight: "13px" }, children: summary.points > 0 ? summary.points : "-" })
-                  ]
-                })) : y("span", { style: { color: "#D1D5DB" }, className: "text-[#D1D5DB] text-[16px] font-light", children: "-" })
           })
         ]
       });
@@ -2431,19 +2402,17 @@ function Ui(){
               className: "bg-white border border-black shadow-[0_8px_24px_rgba(0,0,0,0.08),0_1px_0_rgba(0,0,0,1)] rounded-[2px] overflow-hidden",
               children: [
                 z("div", {
-                  style: { display: "grid", gridTemplateColumns: "repeat(10, minmax(0, 1fr))", borderBottom: "1px solid #000" },
+                  style: { display: "grid", gridTemplateColumns: "repeat(9, minmax(0, 1fr))", borderBottom: "1px solid #000" },
                   className: "border-b border-black",
                   children: [
-                    renderHoleCell(0), renderHoleCell(1), renderHoleCell(2), renderHoleCell(3), renderHoleCell(4), renderHoleCell(5), renderHoleCell(6), renderHoleCell(7), renderHoleCell(8),
-                    renderOutInCell(g, "OUT")
+                    renderHoleCell(0), renderHoleCell(1), renderHoleCell(2), renderHoleCell(3), renderHoleCell(4), renderHoleCell(5), renderHoleCell(6), renderHoleCell(7), renderHoleCell(8)
                   ]
                 }),
                 z("div", {
-                  style: { display: "grid", gridTemplateColumns: "repeat(10, minmax(0, 1fr))", borderBottom: "1px solid #000" },
+                  style: { display: "grid", gridTemplateColumns: "repeat(9, minmax(0, 1fr))", borderBottom: "1px solid #000" },
                   className: "border-b border-black",
                   children: [
-                    renderHoleCell(9), renderHoleCell(10), renderHoleCell(11), renderHoleCell(12), renderHoleCell(13), renderHoleCell(14), renderHoleCell(15), renderHoleCell(16), renderHoleCell(17),
-                    renderOutInCell(k, "IN")
+                    renderHoleCell(9), renderHoleCell(10), renderHoleCell(11), renderHoleCell(12), renderHoleCell(13), renderHoleCell(14), renderHoleCell(15), renderHoleCell(16), renderHoleCell(17)
                   ]
                 }),
                 z("div", {
