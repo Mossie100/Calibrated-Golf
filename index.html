@@ -10285,10 +10285,8 @@ body.show-bookings #bookings-tab-content.active,
     if(card.parentElement!==info.parentElement||card.previousElementSibling!==info)info.insertAdjacentElement('afterend',card);
     card.style.display='block';
     bind(card);
-    const now=Date.now();
-    const last=Number(card.dataset.cgLastStatusRefresh||0);
-    if(!last || now-last>5000){
-      card.dataset.cgLastStatusRefresh=String(now);
+    if(!card.dataset.cgInitialStatusLoaded){
+      card.dataset.cgInitialStatusLoaded='1';
       setTimeout(()=>refreshStatus(),50);
     }
   }
