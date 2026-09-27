@@ -10983,7 +10983,42 @@ function refresh(){
  if(card){card.querySelector('.on').classList.toggle('active',on);card.querySelector('.off').classList.toggle('active',!on)}
 }
 function afterNav(){requestAnimationFrame(()=>requestAnimationFrame(refresh))}
-document.addEventListener('click',e=>{if(e.target&&e.target.closest&&e.target.closest('button'))afterNav()},true);
+
+/* Settings can be re-rendered after navigation from the React Stock/Finder pages.
+   Re-attach the Live Command Elements card after that subtree settles. */
+let cgLceSettingsRepairPending=false;
+function repairLiveCommandSetting(){
+ if(cgLceSettingsRepairPending)return;
+ cgLceSettingsRepairPending=true;
+ requestAnimationFrame(()=>{
+   cgLceSettingsRepairPending=false;
+   const card=ensureSetting();
+   if(card){
+     const on=enabled();
+     card.querySelector('.on')?.classList.toggle('active',on);
+     card.querySelector('.off')?.classList.toggle('active',!on);
+   }
+ });
+}
+function scheduleSettingsRepairs(){
+ repairLiveCommandSetting();
+ setTimeout(repairLiveCommandSetting,70);
+ setTimeout(repairLiveCommandSetting,180);
+ setTimeout(repairLiveCommandSetting,360);
+}
+
+document.addEventListener('click',e=>{
+ const button=e.target&&e.target.closest&&e.target.closest('button');
+ if(!button)return;
+ afterNav();
+ if(button.matches('#header-settings-btn,[data-testid="header-settings-btn"],[title="Settings"]'))scheduleSettingsRepairs();
+},true);
+
+const cgLceRoot=document.getElementById('root');
+if(cgLceRoot){
+ new MutationObserver(()=>repairLiveCommandSetting()).observe(cgLceRoot,{childList:true,subtree:true});
+}
+
 window.addEventListener('online',refresh);window.addEventListener('offline',refresh);
 window.addEventListener('calibrated:hosted-device-count',refresh);
 if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>{setTimeout(refresh,700)},{once:true});else setTimeout(refresh,700);
