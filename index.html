@@ -4339,6 +4339,17 @@ function Ui(){
 
   window.showSettingsPage = function(){
     resetTransientTabViews();
+
+    /* STOCK -> SETTINGS COMMAND CENTRE GUARD
+       Settings wins immediately over any stale Stock state. */
+    const hideStockCommandCentre=()=>{
+      document.body.classList.remove('cg-stock-grey','cg-finder-grey','cg-command-workflow');
+      document.body.classList.add('cg-settings-grey');
+      const command=document.getElementById('cg-live-command-centre');
+      if(command) command.style.display='none';
+    };
+    hideStockCommandCentre();
+
     window.showOriginalPages();
     if(typeof window.switchReactTab === 'function'){
       window.switchReactTab('settings');
@@ -4346,6 +4357,15 @@ function Ui(){
       const origSettings = document.querySelector('[data-testid="tab-settings"]');
       if(origSettings) origSettings.click();
     }
+
+    /* React can settle the former Stock subtree a moment later; reassert only
+       the Settings/Command-Centre visibility state without touching anything else. */
+    hideStockCommandCentre();
+    requestAnimationFrame(()=>requestAnimationFrame(hideStockCommandCentre));
+    setTimeout(hideStockCommandCentre,60);
+    setTimeout(hideStockCommandCentre,180);
+    setTimeout(hideStockCommandCentre,360);
+
     window.updateTabVisuals('settings');
     scrollToTop();
     setTimeout(scrollToTop, 20);
@@ -10029,7 +10049,7 @@ body.cg-handicap-definitions-open #cg-handicap-frame{min-height:0 !important;}
     if(!el) return;
     if(el.id==='pill-tab-stock' || el.dataset.testid==='tab-stock') setGrey('stock');
     else if(el.id==='pill-tab-finder' || el.dataset.testid==='tab-finder') setGrey('finder');
-    else if(el.id==='header-settings-btn' || el.dataset.testid==='tab-settings') setGrey('settings');
+    else if(el.id==='header-settings-btn' || el.dataset.testid==='tab-settings' || el.dataset.testid==='header-settings-btn' || el.title==='Settings') setGrey('settings');
     else if(
       el.id==='pill-tab-scorecard' || el.id==='pill-tab-bookings' || el.id==='pill-tab-formats' ||
       el.id==='pill-tab-rules' || el.id==='pill-tab-news' || el.id==='cg-header-interactive-tab' ||
@@ -11159,7 +11179,8 @@ function refresh(){
    // the Stock tab button exists; that was re-showing it on Finder/other tabs.
    const stockIsCurrent=document.body.classList.contains('cg-stock-grey');
    const finderWorkflow=document.body.classList.contains('cg-finder-grey')&&document.body.classList.contains('cg-command-workflow');
-   c.style.display=(on&&(stockIsCurrent||finderWorkflow))?'block':'none';const h=new Date().getHours(),g=h<12?'GOOD MORNING':h<18?'GOOD AFTERNOON':'GOOD EVENING',n=firstName();c.querySelector('.cgcc-greet').textContent=g+(n?', '+n.toUpperCase():'');c.querySelector('.cgcc-date').textContent=new Date().toLocaleDateString(undefined,{weekday:'short',day:'numeric',month:'short',year:'numeric'});const a=activeRound();c.querySelector('.cgcc-title').textContent=a?'ROUND IN PROGRESS':'NO ROUND IN PROGRESS';c.querySelector('.cgcc-copy').textContent=a?'Continue your unfinished round where you left off.':'Select your course, add players, then open the scorecard.';c.querySelector('.cgcc-continue').style.display=a?'block':'none'}
+   const settingsIsCurrent=document.body.classList.contains('cg-settings-grey');
+   c.style.display=(on&&!settingsIsCurrent&&(stockIsCurrent||finderWorkflow))?'block':'none';const h=new Date().getHours(),g=h<12?'GOOD MORNING':h<18?'GOOD AFTERNOON':'GOOD EVENING',n=firstName();c.querySelector('.cgcc-greet').textContent=g+(n?', '+n.toUpperCase():'');c.querySelector('.cgcc-date').textContent=new Date().toLocaleDateString(undefined,{weekday:'short',day:'numeric',month:'short',year:'numeric'});const a=activeRound();c.querySelector('.cgcc-title').textContent=a?'ROUND IN PROGRESS':'NO ROUND IN PROGRESS';c.querySelector('.cgcc-copy').textContent=a?'Continue your unfinished round where you left off.':'Select your course, add players, then open the scorecard.';c.querySelector('.cgcc-continue').style.display=a?'block':'none'}
  if(card){card.querySelector('.on').classList.toggle('active',on);card.querySelector('.off').classList.toggle('active',!on)}
 }
 function afterNav(){requestAnimationFrame(()=>requestAnimationFrame(refresh))}
@@ -11572,7 +11593,7 @@ document.addEventListener('click',e=>{
 (function(){
 'use strict';
 document.addEventListener('click',function(e){
-  const settings=e.target&&e.target.closest&&e.target.closest('#header-settings-btn,[data-testid="header-settings-btn"]');
+  const settings=e.target&&e.target.closest&&e.target.closest('#header-settings-btn,[data-testid="header-settings-btn"],[data-testid="tab-settings"],[title="Settings"]');
   if(!settings)return;
   document.body.classList.remove('cg-stock-grey','cg-command-workflow');
   const c=document.getElementById('cg-live-command-centre');
