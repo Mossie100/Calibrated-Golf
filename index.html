@@ -8216,12 +8216,37 @@ schedule();
   }
 
 
+
+  /* Admin account checks must never manufacture a fresh anonymous identity.
+     The PWA can paint from local cache before the external Supabase library is
+     ready, so wait for it instead of treating that brief startup race as failure. */
+  async function waitForSupabaseLibrary(timeoutMs=12000){
+    const started=Date.now();
+    while(Date.now()-started<timeoutMs){
+      if(window.supabase && typeof window.supabase.createClient==='function') return true;
+      await new Promise(resolve=>setTimeout(resolve,120));
+    }
+    throw new Error(navigator.onLine===false
+      ? 'Offline — administrator account verification will resume when internet access returns.'
+      : 'Supabase authentication is still loading. Please try Refresh Account Status again.');
+  }
+
+  async function ensureAdminClientReady(){
+    requireAdminDeviceName();
+    await waitForSupabaseLibrary();
+    if(!cgSupabase){
+      cgSupabase=window.supabase.createClient(CG_SUPABASE_URL,CG_SUPABASE_PUBLISHABLE_KEY,{
+        auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:false}
+      });
+    }
+    return cgSupabase;
+  }
+
   async function ensureAdminAuth(){
     requireAdminDeviceName();
-    // Administrator privileges are tied to the existing persisted Supabase
-    // anonymous identity. Refresh that SAME session before every admin RPC so
-    // the server receives the current JWT/claims without creating a new user.
-    await ensureSupabaseAuth();
+    // Administrator authentication is completely separate from the Interactive
+    // anonymous-session bootstrap. Never create/replace an admin identity here.
+    await ensureAdminClientReady();
     if(!cgSupabase) throw new Error('Supabase administrator authentication is unavailable.');
 
     const currentResult=await cgSupabase.auth.getSession();
@@ -9053,17 +9078,47 @@ schedule();
   // Calibrated Golf; Supabase receives them directly over its authenticated API.
   async function cgAdminAccountStatus(){
     requireAdminDeviceName();
-    await ensureSupabaseAuth();
+    await ensureAdminClientReady();
     if(!cgSupabase) throw new Error('Supabase authentication is unavailable.');
-    const userResult=await cgSupabase.auth.getUser();
-    if(userResult.error) throw userResult.error;
-    const user=userResult.data&&userResult.data.user;
-    if(!user||!user.id) throw new Error('No authenticated Supabase user is available.');
+
+    /* Read the persisted session first. This is local and does NOT create a
+       replacement anonymous UUID if the permanent session is missing. */
+    const sessionResult=await cgSupabase.auth.getSession();
+    if(sessionResult.error) throw sessionResult.error;
+    const savedSession=sessionResult.data&&sessionResult.data.session;
+    const savedUser=savedSession&&savedSession.user;
+    if(!savedUser||!savedUser.id){
+      throw new Error('No saved administrator session is present on this device. Use Sign In to Permanent Admin once to restore it.');
+    }
+
+    /* When online, verify against Supabase. A cached PWA can become visible
+       before the network is fully awake, so retry briefly before falling back
+       to the already-persisted session. */
+    let user=savedUser;
+    let verified=false;
+    if(navigator.onLine!==false){
+      for(let attempt=0;attempt<3;attempt++){
+        try{
+          const userResult=await cgSupabase.auth.getUser();
+          if(!userResult.error && userResult.data && userResult.data.user){
+            user=userResult.data.user;
+            verified=true;
+            break;
+          }
+          if(userResult.error && attempt===2) throw userResult.error;
+        }catch(err){
+          if(attempt===2) break;
+        }
+        await new Promise(resolve=>setTimeout(resolve,350*(attempt+1)));
+      }
+    }
+
     return {
       uuid:String(user.id),
       email:String(user.email||user.new_email||''),
       anonymous:user.is_anonymous===true,
-      emailConfirmed:!!user.email_confirmed_at
+      emailConfirmed:!!user.email_confirmed_at,
+      verificationPending:!verified
     };
   }
 
@@ -9102,19 +9157,56 @@ schedule();
     const clean=String(email||'').trim();
     const pwd=String(password||'');
     if(!clean || !pwd) throw new Error('Enter the administrator email and password.');
-    await ensureSupabaseAuth();
-    const result=await cgSupabase.auth.signInWithPassword({email:clean,password:pwd});
-    if(result.error) throw result.error;
+    await ensureAdminClientReady();
+
+    let result=null;
+    let lastError=null;
+    for(let attempt=0;attempt<3;attempt++){
+      try{
+        result=await cgSupabase.auth.signInWithPassword({email:clean,password:pwd});
+        if(result && !result.error) break;
+        lastError=result&&result.error?result.error:null;
+      }catch(err){
+        lastError=err;
+      }
+      await new Promise(resolve=>setTimeout(resolve,450*(attempt+1)));
+    }
+    if(!result || result.error){
+      throw (result&&result.error)||lastError||new Error('Administrator sign-in failed.');
+    }
+
     const session=result.data&&result.data.session;
     if(!session||!session.user||!session.user.id) throw new Error('Administrator sign-in did not return a valid session.');
-    // Confirm that the signed-in UUID is actually on the server-side admin whitelist.
-    const verify=await runAdminRpc('cg_admin_list_active_sessions');
-    if(verify.error){
-      try{await cgSupabase.auth.signOut();}catch(_){}
-      backendInitPromise=null;
-      throw new Error('This login is not authorized as a Calibrated Golf administrator.');
+
+    /* Password sign-in itself is now authoritative for restoring the persisted
+       Supabase session. Whitelist verification follows, but a transient network
+       failure MUST NOT throw away a successful permanent login. */
+    let whitelistVerified=false;
+    for(let attempt=0;attempt<3;attempt++){
+      try{
+        const verify=await cgSupabase.rpc('cg_admin_list_active_sessions');
+        if(!verify.error){
+          whitelistVerified=true;
+          adminServerAccessState='granted';
+          setAdminAccessUI();
+          break;
+        }
+        if(isAdminServerDenial(verify.error)){
+          try{await cgSupabase.auth.signOut();}catch(_){}
+          backendInitPromise=null;
+          adminServerAccessState='denied';
+          setAdminAccessUI();
+          throw new Error('This login is not authorized as a Calibrated Golf administrator.');
+        }
+      }catch(err){
+        if(String(err&&err.message||'').includes('not authorized')) throw err;
+      }
+      await new Promise(resolve=>setTimeout(resolve,500*(attempt+1)));
     }
-    return cgAdminAccountStatus();
+
+    const st=await cgAdminAccountStatus();
+    st.whitelistVerificationPending=!whitelistVerified;
+    return st;
   }
 
   window.CalibratedGolfAdminAccount={
@@ -10497,8 +10589,11 @@ body.show-bookings #bookings-tab-content.active,
       const st=await bridge().status();
       const permanent=!st.anonymous;
       const email=st.email?esc(st.email):'No email linked';
+      const pending=st.verificationPending
+        ? '<br><span style="color:#92400e;font-weight:600">Saved session loaded locally — server verification pending.</span>'
+        : '';
       status.innerHTML=(permanent?'<strong style="color:#15803d">Permanent administrator account</strong>':'<strong>Anonymous administrator account</strong>')+
-        '<br>'+email+'<span class="cg-admin-uuid">UUID: '+esc(st.uuid)+'</span>';
+        '<br>'+email+'<span class="cg-admin-uuid">UUID: '+esc(st.uuid)+'</span>'+pending;
       const convert=document.getElementById('cg-admin-convert-section');
       if(convert)convert.style.display=permanent?'none':'block';
       if(message)setFeedback(message,'ok');
@@ -10626,9 +10721,13 @@ body.show-bookings #bookings-tab-content.active,
       const password=String(card.querySelector('#cg-admin-login-password')?.value||'');
       setBusy(true);setFeedback('Signing in to the permanent administrator account…');
       try{
-        await bridge().signIn(email,password);
+        const signed=await bridge().signIn(email,password);
         card.querySelector('#cg-admin-login-password').value='';
-        await refreshStatus('Administrator sign-in verified against the server whitelist.');
+        if(signed&&signed.whitelistVerificationPending){
+          await refreshStatus('✓ Permanent admin signed in. Server whitelist verification will retry automatically.');
+        }else{
+          await refreshStatus('✓ Permanent admin sign-in verified.');
+        }
       }catch(err){setFeedback(err&&err.message?err.message:'Administrator sign-in failed.','error');}
       finally{setBusy(false);}
     });
@@ -10686,13 +10785,14 @@ body.show-bookings #bookings-tab-content.active,
     applyAdminVisibility(card);
     if(!card.dataset.cgInitialStatusLoaded){
       card.dataset.cgInitialStatusLoaded='1';
-      setTimeout(()=>refreshStatus(),50);
+      setTimeout(()=>refreshStatus(),450);
     }
   }
 
   let timer=0;
   function schedule(){clearTimeout(timer);timer=setTimeout(ensureCard,120);}
   window.addEventListener('load',()=>{ensureCard();setTimeout(schedule,350);});
+  window.addEventListener('online',()=>{setTimeout(()=>{if(document.getElementById('cg-admin-account-card'))refreshStatus();},500);});
   window.addEventListener('cg-profile-name-change',schedule);
   document.addEventListener('click',schedule,true);
   document.addEventListener('change',schedule,true);
@@ -11728,6 +11828,111 @@ document.addEventListener('click',function(e){
 }
 </style>
 
+
+
+<script id="cg-build-update-check">
+(function(){
+  'use strict';
+  const CG_BUILD="8.4.3-build-003";
+  const VERSION_URL='./version.json';
+  const CACHE_PREFIX='calibrated-golf-shell-';
+  let updateInFlight=false;
+  window.CALIBRATED_GOLF_BUILD=CG_BUILD;
+
+  function currentCleanUrl(){
+    try{
+      const u=new URL(window.location.href);
+      u.hash='';
+      u.searchParams.delete('cg_build');
+      return u.href;
+    }catch(_){
+      return window.location.href.split('#')[0].split('?')[0];
+    }
+  }
+
+  function roundInProgress(){
+    try{
+      const r=JSON.parse(localStorage.getItem('golf_scorecard_saved_round')||'null');
+      if(!r||!Array.isArray(r.scores))return false;
+      let played=0;
+      for(let h=0;h<18;h++){
+        const hasScore=r.scores.some(row=>Array.isArray(row)&&row[h]!=null&&row[h]!=='');
+        const picked=Array.isArray(r.picked)&&r.picked.some(row=>Array.isArray(row)&&row[h]===true);
+        if(hasScore||picked)played++;
+      }
+      return played>0&&played<18;
+    }catch(_){ return false; }
+  }
+
+  async function fetchRemoteBuild(){
+    const sep=VERSION_URL.includes('?')?'&':'?';
+    const res=await fetch(VERSION_URL+sep+'t='+Date.now(),{
+      cache:'no-store',
+      credentials:'same-origin',
+      headers:{'Cache-Control':'no-cache','Pragma':'no-cache'}
+    });
+    if(!res.ok)throw new Error('Version check failed');
+    const data=await res.json();
+    return String(data&&data.build||'').trim();
+  }
+
+  async function replaceCachedIndex(remoteBuild){
+    const cleanUrl=currentCleanUrl();
+    const updateUrl=new URL(cleanUrl);
+    updateUrl.searchParams.set('cg_build',remoteBuild);
+
+    const fresh=await fetch(updateUrl.href,{
+      cache:'no-store',
+      credentials:'same-origin',
+      headers:{'Cache-Control':'no-cache','Pragma':'no-cache'}
+    });
+    if(!fresh.ok)throw new Error('New app build could not be downloaded');
+
+    if('caches' in window){
+      const names=await caches.keys();
+      let matched=false;
+      for(const name of names){
+        if(!name.startsWith(CACHE_PREFIX))continue;
+        matched=true;
+        const cache=await caches.open(name);
+        await cache.put(cleanUrl,fresh.clone());
+      }
+      if(!matched){
+        const cache=await caches.open('calibrated-golf-shell-v1');
+        await cache.put(cleanUrl,fresh.clone());
+      }
+    }
+
+    try{localStorage.setItem('calibratedGolf.pendingBuild',remoteBuild)}catch(_){}
+    return true;
+  }
+
+  async function checkForUpdate(){
+    if(updateInFlight||navigator.onLine===false)return;
+    updateInFlight=true;
+    try{
+      const remoteBuild=await fetchRemoteBuild();
+      if(!remoteBuild||remoteBuild===CG_BUILD)return;
+
+      await replaceCachedIndex(remoteBuild);
+
+      if(roundInProgress())return;
+
+      try{sessionStorage.setItem('calibratedGolf.updateReload',remoteBuild)}catch(_){}
+      window.location.reload();
+    }catch(_){
+    }finally{
+      updateInFlight=false;
+    }
+  }
+
+  window.addEventListener('load',()=>setTimeout(checkForUpdate,700),{once:true});
+  window.addEventListener('online',()=>setTimeout(checkForUpdate,400));
+  document.addEventListener('visibilitychange',()=>{
+    if(document.visibilityState==='visible')setTimeout(checkForUpdate,500);
+  });
+})();
+</script>
 
 <script id="cg-pwa-local-cache-registration">
 (function(){
