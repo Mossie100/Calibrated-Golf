@@ -1,5 +1,3 @@
 {
-  "build": "8.4.3-build-003",
-  "version": "8.4.3",
-  "channel": "production"
+  "build": "8.5.1-mobile-scorecard-gate-howto-cleanup"
 }
