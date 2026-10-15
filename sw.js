@@ -1,165 +1,90 @@
-/* Calibrated Golf local app-shell cache
- * Purpose: make Home Screen/browser launches use a persistent local copy first,
- * while quietly refreshing that copy from Netlify/GitHub in the background.
- *
- * IMPORTANT:
- * - Never force-reloads an active round.
- * - New HTML is cached in the background and used on the NEXT launch/navigation.
- * - Same-origin static assets are cached too.
- * - API/auth/function traffic is deliberately excluded.
- */
-
+/* Calibrated Golf v8.8.112: fast offline-first launches, explicit online updates. */
 'use strict';
-
-const CACHE_PREFIX = 'calibrated-golf-shell-';
-const CACHE_NAME = 'calibrated-golf-shell-v1';
-
-self.addEventListener('install', event => {
-  /* Activate immediately. No fragile install-time precache that could fail
-     because of Index.html/index.html/path differences on a deployment. */
-  self.skipWaiting();
-});
-
-self.addEventListener('activate', event => {
-  event.waitUntil((async () => {
-    const names = await caches.keys();
-    await Promise.all(
-      names
-        .filter(name => name.startsWith(CACHE_PREFIX) && name !== CACHE_NAME)
-        .map(name => caches.delete(name))
-    );
-    await self.clients.claim();
-  })());
-});
-
-function sameOrigin(url) {
-  return url.origin === self.location.origin;
+const SHELL_CACHE='calibrated-golf-shell-v8.8.112';
+const PREFIX='calibrated-golf-shell-';
+const APP_ROOT=new URL('./',self.registration.scope);
+const SHELL_KEY=new URL('Index.html',APP_ROOT).href;
+let warmInProgress=false;
+self.addEventListener('install',event=>{event.waitUntil(self.skipWaiting());});
+self.addEventListener('activate',event=>{event.waitUntil(self.clients.claim());});
+function isShell(req,url){
+ if(req.method!=='GET'||url.origin!==APP_ROOT.origin)return false;
+ const path=url.pathname.toLowerCase();
+ return path===APP_ROOT.pathname.toLowerCase()||path===new URL('index.html',APP_ROOT).pathname.toLowerCase();
 }
-
-function bypassPath(url) {
-  const p = url.pathname;
-  return (
-    p.startsWith('/.netlify/functions/') ||
-    p.startsWith('/api/') ||
-    p.includes('/auth/') ||
-    p.includes('/oauth/')
-  );
+function isValidHtml(response){
+ return response&&response.ok&&(response.headers.get('content-type')||'').toLowerCase().includes('text/html');
 }
-
-function cacheableResponse(response) {
-  return !!(
-    response &&
-    response.ok &&
-    response.status === 200 &&
-    (response.type === 'basic' || response.type === 'default')
-  );
+async function findStoredShell(){
+ const own=await caches.open(SHELL_CACHE);
+ let found=await own.match(SHELL_KEY,{ignoreSearch:true});
+ if(found)return found;
+ const names=(await caches.keys()).filter(name=>name.startsWith(PREFIX)&&name!==SHELL_CACHE).reverse();
+ for(const name of names){
+  const cache=await caches.open(name);
+  const keys=await cache.keys();
+  for(const key of keys){
+   const url=new URL(key.url);
+   if(url.origin!==APP_ROOT.origin||!isShell(new Request(key.url),url))continue;
+   found=await cache.match(key);
+   if(found)return found;
+  }
+ }
+ return null;
 }
-
-async function putSafe(cache, request, response) {
-  if (!cacheableResponse(response)) return;
-  try {
-    await cache.put(request, response.clone());
-  } catch (_) {}
+async function storeShell(response){
+ if(!isValidHtml(response))return;
+ const cache=await caches.open(SHELL_CACHE);
+ await cache.put(SHELL_KEY,response.clone());
+ // Delete superseded app-shell caches only AFTER successfully caching the new shell.
+ const old=(await caches.keys()).filter(n=>n.startsWith(PREFIX)&&n!==SHELL_CACHE);
+ await Promise.all(old.map(n=>caches.delete(n).catch(()=>false)));
 }
-
-/* Fast launch strategy:
- * 1. Return local cached copy immediately when available.
- * 2. Fetch newest copy in parallel.
- * 3. Replace cache silently for next launch.
- */
-async function staleWhileRevalidate(request, event) {
-  const cache = await caches.open(CACHE_NAME);
-  const cached = await cache.match(request, { ignoreVary: false });
-
-  const updatePromise = fetch(request).then(async response => {
-    await putSafe(cache, request, response);
+function boundedNetwork(req){
+ const ac=new AbortController();
+ const timer=setTimeout(()=>ac.abort(),12000);
+ return fetch(req,{cache:'no-store',signal:ac.signal}).finally(()=>clearTimeout(timer));
+}
+self.addEventListener('fetch',event=>{
+ const req=event.request;
+ if(req.method!=='GET')return;
+ const url=new URL(req.url);
+ if(url.origin!==APP_ROOT.origin)return;
+ if(/\/(version\.json|sw\.js)$/i.test(url.pathname)){
+  event.respondWith(fetch(req,{cache:'no-store'}));return;
+ }
+ if(!isShell(req,url))return;
+ const forced=url.searchParams.has('cg_build')||url.searchParams.has('cg_cb')||url.searchParams.has('cg_recovered');
+ event.respondWith((async()=>{
+  // Explicit Update now MUST bypass cached HTML. Ordinary starts MUST NOT wait for 15MB download.
+  if(!forced){
+   const cached=await findStoredShell();
+   if(cached)return cached;
+  }
+  try{
+   const response=await boundedNetwork(req);
+   if(isValidHtml(response)){
+    event.waitUntil(storeShell(response.clone()).catch(()=>{}));
     return response;
-  }).catch(() => null);
-
-  if (event) event.waitUntil(updatePromise.then(() => undefined));
-
-  if (cached) return cached;
-
-  const fresh = await updatePromise;
-  if (fresh) return fresh;
-
-  /* Last-resort offline fallback: use any cached navigation document
-     from this app scope rather than a blank browser error page. */
-  if (request.mode === 'navigate') {
-    const keys = await cache.keys();
-    for (const key of keys) {
-      if (key.mode === 'navigate' || key.destination === 'document') {
-        const fallback = await cache.match(key);
-        if (fallback) return fallback;
-      }
-    }
+   }
+   return await findStoredShell()||response;
+  }catch(err){
+   return await findStoredShell()||new Response('Offline: Calibrated Golf is not yet cached.',{status:503,headers:{'Content-Type':'text/plain; charset=utf-8'}});
   }
-
-  return new Response(
-    '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><title>Calibrated Golf</title><body style="font-family:Arial,sans-serif;text-align:center;padding:40px">Calibrated Golf is offline and no local app copy is available yet. Open it once while online, then try again.</body>',
-    { status: 503, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
-  );
-}
-
-function isStaticAsset(request) {
-  const d = request.destination;
-  return (
-    d === 'document' ||
-    d === 'style' ||
-    d === 'script' ||
-    d === 'image' ||
-    d === 'font' ||
-    d === 'manifest' ||
-    d === 'worker'
-  );
-}
-
-self.addEventListener('fetch', event => {
-  const request = event.request;
-  if (!request || request.method !== 'GET') return;
-
-  let url;
-  try { url = new URL(request.url); } catch (_) { return; }
-
-  if (!sameOrigin(url) || bypassPath(url)) return;
-
-  /* Navigation is the critical 7.5 MB app-shell path. */
-  if (request.mode === 'navigate') {
-    event.respondWith(staleWhileRevalidate(request, event));
-    return;
-  }
-
-  /* Cache only static same-origin resources; leave dynamic requests alone. */
-  if (isStaticAsset(request)) {
-    event.respondWith(staleWhileRevalidate(request, event));
-  }
+ })());
 });
-
-self.addEventListener('message', event => {
-  const data = event.data || {};
-
-  if (data.type === 'CACHE_CURRENT_PAGE' && data.url) {
-    event.waitUntil((async () => {
-      let url;
-      try { url = new URL(data.url, self.location.origin); } catch (_) { return; }
-      if (!sameOrigin(url) || bypassPath(url)) return;
-
-      url.hash = '';
-      const request = new Request(url.href, {
-        method: 'GET',
-        credentials: 'same-origin',
-        cache: 'no-store'
-      });
-
-      try {
-        const response = await fetch(request);
-        const cache = await caches.open(CACHE_NAME);
-        await putSafe(cache, request, response);
-      } catch (_) {}
-    })());
-  }
-
-  if (data.type === 'CLEAR_CALIBRATED_CACHE') {
-    event.waitUntil(caches.delete(CACHE_NAME));
-  }
+self.addEventListener('message',event=>{
+ if(!event.data||event.data.type!=='CACHE_CURRENT_PAGE'||warmInProgress)return;
+ warmInProgress=true;
+ const work=(async()=>{
+  try{
+   const own=await caches.open(SHELL_CACHE);
+   if(await own.match(SHELL_KEY))return;
+   // Do not download a second 15MB copy while the existing shell is available.
+   if(await findStoredShell())return;
+   const response=await boundedNetwork(SHELL_KEY);
+   if(isValidHtml(response))await storeShell(response);
+  }catch(_){}finally{warmInProgress=false;}
+ })();
+ if(typeof event.waitUntil==='function')event.waitUntil(work);
 });
