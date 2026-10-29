@@ -1,30 +1,45 @@
 <!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Calibrated Golf — Cache Repair</title>
-<style>body{font:16px/1.55 system-ui,Arial,sans-serif;background:#f2f2f3;color:#111;max-width:560px;margin:40px auto;padding:24px}button{font-size:17px;background:#1869df;color:white;border:0;border-radius:26px;padding:14px 24px}p{margin:14px 0}#status{font-weight:bold}</style></head>
-<body><h2>Calibrated Golf — Update Repair</h2><p>This clears only old app-page caches and unregisters outdated service workers. It does <strong>not</strong> delete saved scores, rounds, IndexedDB or player settings.</p>
-<button id="repair">Repair and open Calibrated Golf</button><p id="status" role="status"></p>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Calibrated Golf - App Repair</title>
+<style>body{font:16px/1.55 Arial,sans-serif;background:#fff;color:#111;max-width:560px;margin:32px auto;padding:24px}h1{color:#173582;font-size:25px}h2{font-size:20px}button{display:block;width:100%;font:700 16px Arial,sans-serif;padding:16px;border:.5px solid #000;border-radius:24px;background:#98f247;color:#111;cursor:pointer}button:disabled{opacity:.65;cursor:wait}.secondary{background:#2563eb;color:#fff}section{padding:18px 0;border-top:.5px solid #aaa}#status{font-weight:700}dialog{max-width:440px;width:calc(100% - 56px);box-sizing:border-box;border:.5px solid #000;border-radius:18px;padding:24px}dialog::backdrop{background:#0008}.actions{display:flex;gap:12px}.actions button{flex:1;width:auto;color:#fff}#confirmYes{background:#16a34a}#confirmNo{background:#ff0000}</style></head>
+<body><h1>Calibrated Golf - App Repair</h1><p>Both repair options keep your saved settings, scores, rounds and Buddies identity. Connect to the internet and keep this page open while repairing.</p>
+<section><h2>1. Repair startup</h2><p>Try this first if the app will not open. It updates the startup component and keeps the cached app.</p><button id="repair">Repair startup and open app</button></section>
+<section><h2>2. Clear cached app</h2><p>This keeps the original repair option for a stuck or outdated app. It removes the stored app pages and resets the startup component, then opens a fresh copy. The app will need to download again.</p><button id="clearCache" class="secondary">Clear cached app and reopen</button></section>
+<p id="status" role="status" aria-live="polite"></p>
+<dialog id="confirmClear" aria-labelledby="confirmTitle"><h2 id="confirmTitle">Clear the cached app?</h2><p>The stored app pages will be removed and downloaded again. Your saved settings, scores, rounds and Buddies identity will be kept.</p><div class="actions"><button id="confirmYes">Yes</button><button id="confirmNo" autofocus>No</button></div></dialog>
 <script>
 (function(){
- const btn=document.getElementById('repair'),status=document.getElementById('status');
- btn.onclick=async function(){
-  btn.disabled=true;status.textContent='Repairing the cached application…';
-  if(!navigator.onLine){status.textContent='Please connect to the internet and try again.';btn.disabled=false;return;}
-  try{
-   if('serviceWorker' in navigator){
-    const regs=await navigator.serviceWorker.getRegistrations();
-    for(const reg of regs){
-     if(new URL(reg.scope).origin===location.origin)await reg.unregister();
-    }
-   }
-   if('caches' in window){
-    const keys=await caches.keys();
-    for(const key of keys)if(key.startsWith('calibrated-golf-shell-'))await caches.delete(key);
-   }
-   status.textContent='Old page cache cleared. Opening the latest app…';
-   const u=new URL('./Index.html',location.href);
-   u.searchParams.set('cg_recovered',String(Date.now()));
-   location.replace(u.href);
-  }catch(err){status.textContent='Repair could not complete. '+(err&&err.message||'Try again.');btn.disabled=false;}
- };
+'use strict';
+const first=document.getElementById('repair'),second=document.getElementById('clearCache'),status=document.getElementById('status'),dialog=document.getElementById('confirmClear');let busy=false;
+function working(value){busy=value;first.disabled=value;second.disabled=value;}
+function reopen(){const url=new URL('./',location.href);url.searchParams.set('cg_recovered',String(Date.now()));location.replace(url.href);}
+function online(){if(navigator.onLine)return true;status.textContent='Please connect to the internet and try again.';return false;}
+function workerStatus(worker){return new Promise(resolve=>{if(!worker){resolve(null);return;}const channel=new MessageChannel(),timer=setTimeout(()=>{channel.port1.close();resolve(null);},800);channel.port1.onmessage=e=>{clearTimeout(timer);channel.port1.close();resolve(e.data);};worker.postMessage({type:'CG_STARTUP_STATUS'},[channel.port2]);});}
+first.onclick=async()=>{
+ if(busy||!online())return;working(true);status.textContent='Updating the app startup component...';
+ try{
+  if(!('serviceWorker' in navigator))throw Error('Please open this page in Safari or your usual app browser.');
+  const reg=await navigator.serviceWorker.register('./sw.js',{scope:'./',updateViaCache:'none'});await reg.update();const deadline=Date.now()+25000;let ready=false;
+  while(Date.now()<deadline){reg.waiting?.postMessage({type:'SKIP_WAITING'});if(reg.active){const result=await workerStatus(reg.active);if(result?.redirectSafe){ready=true;break;}}await new Promise(resolve=>setTimeout(resolve,250));}
+  if(!ready)throw Error('The corrected startup file is not available yet. Please try again after the updated app has been published.');
+  status.textContent='Startup repaired. Opening your app...';reopen();
+ }catch(e){status.textContent='Repair could not complete. '+(e.message||'Please try again.');working(false);}
+};
+second.onclick=()=>{if(busy||!online())return;dialog.showModal();document.getElementById('confirmNo').focus();};
+document.getElementById('confirmNo').onclick=()=>{dialog.close();second.focus();};
+dialog.addEventListener('cancel',()=>second.focus());
+document.getElementById('confirmYes').onclick=async()=>{
+ dialog.close();if(busy||!online())return;working(true);status.textContent='Checking the connection before clearing cached app pages...';
+ try{
+  // Check the network without involving the cached navigation response.
+  const check=new URL('./',location.href);check.searchParams.set('cg_recovered',String(Date.now()));
+  const ac=new AbortController(),timer=setTimeout(()=>ac.abort(),15000);let response;
+  try{response=await fetch(check.href,{method:'HEAD',cache:'no-store',redirect:'follow',signal:ac.signal});}finally{clearTimeout(timer);}
+  if(!response.ok)throw Error('The app server is unavailable. The cached app has not been cleared. Please try again later.');
+  status.textContent='Clearing cached app pages. Saved settings and scores are being kept...';
+  if('serviceWorker' in navigator){const root=new URL('./',location.href).href;for(const reg of await navigator.serviceWorker.getRegistrations()){if(reg.scope===root)await reg.unregister();}}
+  if('caches' in window){for(const key of await caches.keys()){if(key.startsWith('calibrated-golf-shell-'))await caches.delete(key);}}
+  status.textContent='Cached app cleared. Opening a fresh copy...';reopen();
+ }catch(e){status.textContent='Repair could not complete. '+(e.message||'Please try again.');working(false);}
+};
 })();
 </script></body></html>
